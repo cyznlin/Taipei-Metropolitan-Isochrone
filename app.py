@@ -7,6 +7,7 @@ from streamlit_folium import st_folium
 from shapely.geometry import Point, LineString, MultiPoint
 from shapely.ops import unary_union
 import geopandas as gpd
+from huggingface_hub import hf_hub_download
 from geopy.distance import geodesic
 from jinja2 import Template
 import pandas as pd
@@ -91,8 +92,8 @@ def load_core_data():
             # 執行移除
             G_walk.remove_edges_from(remove_edges)
 
-        except Exception as e:
-            st.error(f"路網錯誤: {e}")
+    except Exception as e:
+        st.error(f"路網錯誤: {e}")
 
     # B. 載入 CSV
     if os.path.exists(CSV_FILENAME):
