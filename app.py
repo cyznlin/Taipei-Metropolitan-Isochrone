@@ -20,20 +20,29 @@ CSV_FILENAME = os.path.join("stations_master.csv")
 
 
 # --- 1. 資料載入 (防崩潰保護) ---
-@st.cache_resource(show_spinner="載入核心資料...")
+@st.cache_resource(show_spinner="正在從雲端下載地圖資料...")
 def load_core_data():
     G_drive, G_walk, stations = None, None, None
+    
+    try:
+        # 1. 自動下載並取得檔案路徑 (HF 會自動快取，不會每次都重抓，速度很快)
+        print(f"📥 正在從 {DATA_REPO_ID} 下載地圖...")
+        local_path = hf_hub_download(
+            repo_id=DATA_REPO_ID,
+            filename=DATA_FILENAME,
+            repo_type="model"  # 指定是 Model 倉庫
+        )
+        print(f"✅ 下載完成，路徑: {local_path}")
 
-    # A. 載入 Graph
-    if os.path.exists(GRAPH_FILENAME):
-        try:
-            print("🚀 載入 Pickle 地圖檔...")
-            with open(GRAPH_FILENAME, "rb") as f:
-                G_raw = pickle.load(f)
+        # 2. 讀取壓縮檔
+        print("🚀 載入地圖結構中...")
+        with gzip.open(local_path, "rb") as f:
+            G_raw = pickle.load(f)
 
-            for n, d in G_raw.nodes(data=True):
-                d['x'] = float(d.get('x', 0))
-                d['y'] = float(d.get('y', 0))
+        # 3. 處理座標 (維持原本邏輯)
+        for n, d in G_raw.nodes(data=True):
+            d['x'] = float(d.get('x', 0))
+            d['y'] = float(d.get('y', 0))
 
             # 建立 G_drive
             G_drive = G_raw.to_undirected()
@@ -92,7 +101,8 @@ def load_core_data():
             stations['unique_id'] = stations.apply(lambda row: f"{row['name']}_{row['line_id']}", axis=1)
             stations['node_id'] = stations['unique_id'].apply(lambda x: f"STATION_{x}")
         except Exception as e:
-            st.error(f"CSV錯誤: {e}")
+            st.error(f"地圖載入失敗: {e}")
+            return None, None, None
 
     return G_drive, G_walk, stations
 
