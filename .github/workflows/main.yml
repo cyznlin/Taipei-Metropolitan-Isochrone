@@ -1,0 +1,23 @@
+name: Sync to Hugging Face Hub
+
+on:
+  push:
+    branches: [main]
+
+  # 允許手動觸發
+  workflow_dispatch:
+
+jobs:
+  sync-to-hub:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Push to hub
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        # 下面這一行請修改你的 HF Space ID
+        # 格式是: run: git push https://LINZHENGYING:$HF_TOKEN@huggingface.co/spaces/YOUR_HF_USERNAME/YOUR_SPACE_NAME main
+        run: git push https://USERNAME:$HF_TOKEN@huggingface.co/spaces/ZnCYLin/Taipei-Metropolitan-Isochrone --force
