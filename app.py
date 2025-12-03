@@ -16,93 +16,50 @@ import os
 st.set_page_config(page_title="Taipei Metropolitan Area Isochrone Map", layout="wide")
 
 DATA_REPO_ID = "ZnCYLin/north-taiwan-map-data"  # 👈 請修改這裡
-DATA_FILENAME = "north_taiwan.pkl.gz"
+DATA_FILENAME = "north_taiwan_ready.pkl.gz"
 CSV_FILENAME = os.path.join("stations_master.csv")
 
 
 # --- 1. 資料載入 (防崩潰保護) ---
-@st.cache_resource(show_spinner="正在從雲端下載地圖資料...")
+@st.cache_resource(show_spinner="正在載入預處理地圖...")
 def load_core_data():
     G_drive, G_walk, stations = None, None, None
     
     try:
-        # 1. 自動下載並取得檔案路徑 (HF 會自動快取，不會每次都重抓，速度很快)
-        print(f"📥 正在從 {DATA_REPO_ID} 下載地圖...")
+        # 1. 下載
+        print(f"📥 正在下載 {DATA_FILENAME}...")
         local_path = hf_hub_download(
             repo_id=DATA_REPO_ID,
             filename=DATA_FILENAME,
-            repo_type="model"  # 指定是 Model 倉庫
+            repo_type="model"
         )
-        print(f"✅ 下載完成，路徑: {local_path}")
-
-        # 2. 讀取壓縮檔
-        print("🚀 載入地圖結構中...")
+        
+        # 2. 讀取 (因為權重都算好了，直接讀進來)
+        print("🚀 快速載入...")
         with gzip.open(local_path, "rb") as f:
             G_raw = pickle.load(f)
 
-        # 3. 處理座標 (維持原本邏輯)
-        for n, d in G_raw.nodes(data=True):
-            d['x'] = float(d.get('x', 0))
-            d['y'] = float(d.get('y', 0))
-
-            # 建立 G_drive
-            G_drive = G_raw.to_undirected()
-            for u, v, k, d in G_drive.edges(keys=True, data=True):
-                length = float(d.get('length', 50))
-
-                # 1. 取得原始速限
-                raw_speed = float(d.get('speed_kph', 30))
-                if raw_speed <= 0: raw_speed = 30.0
-
-                # 2. 依照您的規則設定速度參數 (km/h)
-                is_hwy = raw_speed >= 80
-
-                if is_hwy:
-                    speed_normal = 80.0
-                    speed_peak = 35.0
-                else:
-                    speed_normal = 30.0
-                    speed_peak = 15.0
-
-                # 3. 計算時間權重 (分鐘)
-                # 修正點：這裡的 Key 必須跟 UI 的 mode 對應
-                d['time_private'] = length / (speed_normal * 1000 / 60)
-                d['time_private_peak'] = length / (
-                            speed_peak * 1000 / 60)  # 原本是 'time_peak'，修正為 'time_private_peak'
-
-                # 4. 腳踏車
-                d['time_bike'] = length / (10.0 * 1000 / 60)
-
-            # 建立 G_walk
-                # 建立 G_walk (修正版：雙向通行，但嚴格排除高速公路)
-            G_walk = G_raw.to_undirected()
-            # 先收集需要移除的高速公路邊 (避免在迭代中修改字典)
-            remove_edges = []
-            for u, v, k, d in G_walk.edges(keys=True, data=True):
-                raw_speed = float(d.get('speed_kph', 30))
-
-                # 邏輯：如果該路段原本速限 >= 80 (快速道路/高速公路)，行人禁行 -> 移除
-                if raw_speed >= 80:
-                    remove_edges.append((u, v, k))
-                else:
-                    # 其餘路段 (平面道路)，一律以 4 km/h 計算
-                    length_walk = float(d.get('length', 50))
-                    d['time_walk'] = length_walk / (4.0 * 1000 / 60)
-
-            # 執行移除
-            G_walk.remove_edges_from(remove_edges)
+        # 3. 分拆圖層 (這非常快，因為只是複製參照)
+        G_drive = G_raw # 開車直接用全圖
+        
+        # 步行圖層：過濾掉 time_walk 太大的路 (高速公路)
+        # 這裡用 view 或是 subgraph 會比重建快很多
+        def filter_walk(u, v, k, d):
+            return d.get('time_walk', 999999) < 1000
+            
+        G_walk = nx.subgraph_view(G_raw, filter_edge=filter_walk)
 
     except Exception as e:
-        st.error(f"路網錯誤: {e}")
+        st.error(f"地圖載入失敗: {e}")
+        return None, None, None
 
-    # B. 載入 CSV
+    # B. 載入 CSV (這部分不變)
     if os.path.exists(CSV_FILENAME):
         try:
             stations = pd.read_csv(CSV_FILENAME)
             stations['unique_id'] = stations.apply(lambda row: f"{row['name']}_{row['line_id']}", axis=1)
             stations['node_id'] = stations['unique_id'].apply(lambda x: f"STATION_{x}")
         except Exception as e:
-            st.error(f"地圖載入失敗: {e}")
             return None, None, None
 
     return G_drive, G_walk, stations
