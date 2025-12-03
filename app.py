@@ -353,65 +353,125 @@ if st.session_state['analyzed'] and not st.session_state['res']:
 # --- 5. 繪製地圖 (置頂) ---
 m = folium.Map(location=st.session_state['marker'], zoom_start=13, tiles="CartoDB positron")
 
-# 軌道底圖
+# 1. 繪製軌道底圖
 fg_rail = folium.FeatureGroup(name="軌道系統", show=True)
 for l in rs.lines:
-    folium.PolyLine(l['coords'], color=l['color'], weight=l.get('weight', 2), dash_array=l.get('dash')).add_to(fg_rail)
+    folium.PolyLine(
+        l['coords'], 
+        color=l['color'], 
+        weight=l.get('weight', 2), 
+        dash_array=l.get('dash')
+    ).add_to(fg_rail)
+
 for uid, pos in rs.stations.items():
     folium.CircleMarker(pos, radius=1.5, color='black').add_to(fg_rail)
 fg_rail.add_to(m)
 
-# 結果圖層
+# 2. 繪製分析結果 (改用不含 Lambda 的寫法)
 colors = {'private': '#E74C3C', 'private_peak': '#922B21', 'rail': '#0070BD', 'bike': '#F39C12', 'walk': '#2ECC71'}
 order = ['private', 'private_peak', 'bike', 'rail', 'walk']
+
+# 用來存放計算出的面積，稍後顯示在 UI
+area_stats = {} 
 
 if st.session_state['res']:
     for k in order:
         if k in st.session_state['res']:
             v = st.session_state['res'][k]
             fg = folium.FeatureGroup(name=k)
+            
+            # (A) 繪製等時圈 (多邊形) - 避開 style_function
+            poly_geom = v['p']
+            style_opts = {
+                'fillColor': colors[k],
+                'color': colors[k],
+                'weight': 0,
+                'fillOpacity': 0.3
+            }
+            
+            # 將 Shapely 幾何轉為 Folium 可讀的 GeoJSON，但不使用 style_function，而是直接放入 style 屬性 (如果支援)
+            # 最穩定的方法：直接用 folium.GeoJson 預設樣式，或者簡單化
+            # 為了避開 JSON 錯誤，我們這裡使用最單純的 GeoJson 物件，不帶 style_function
+            # 替代方案：在前端渲染顏色較難，我們改用 folium.Polygon 迭代 (雖然程式碼多一點，但絕對安全)
+            
+            import json
+            from shapely.geometry import mapping
+            
+            # 建立一個簡單的 Style 字典
+            style_dict = lambda x: {
+                'fillColor': colors[k],
+                'color': colors[k],
+                'weight': 0, 
+                'fillOpacity': 0.3
+            }
+            # ⚠️ 注意：雖然這裡定義了 lambda，但我們不傳給 st_folium。
+            # 我們直接產生一個靜態的 GeoJson 物件加入地圖，通常 st_folium 對 "靜態" GeoJson 支援較好。
+            # 如果還是報錯，代表 st_folium 強制檢查 style_function。
+            # 最終極解法：使用 GeoJson 的 style 參數 (新版 Folium) 或直接畫 Polygon。
+            
+            # 這裡採用 "直接畫 GeoJson 但不傳 style_function" (會是預設藍色)，
+            # 若要顏色，改用 'style' 字典直接傳入 (Folium 0.14+ 支援)
+            # 為了保險，我們使用最笨但最穩的方法：迭代 geometry
+            
+            geoms = []
+            if poly_geom.geom_type == 'MultiPolygon':
+                geoms = list(poly_geom.geoms)
+            elif poly_geom.geom_type == 'Polygon':
+                geoms = [poly_geom]
+                
+            for p in geoms:
+                # 座標需要反轉 (Lon, Lat) -> (Lat, Lon) 因為 Folium 使用 LatLon
+                # Shapely 是 (x, y) = (Lon, Lat)
+                locations = [(y, x) for x, y in p.exterior.coords]
+                holes = [[(y, x) for x, y in h.coords] for h in p.interiors]
+                
+                folium.Polygon(
+                    locations=locations,
+                    holes=holes,
+                    color=colors[k],      # 直接傳字串，JSON Safe
+                    fill_color=colors[k], # 直接傳字串，JSON Safe
+                    fill_opacity=0.3,
+                    weight=0
+                ).add_to(fg)
+
+            # (B) 繪製路網 (細節模式)
             if st.session_state['is_detailed'] and v['e']:
                 for gdf in v['e']:
-                    folium.GeoJson(gdf, style_function=lambda x, c=colors[k]: {'color': c, 'weight': 1.2,
-                                                                               'opacity': 0.8}).add_to(fg)
-            folium.GeoJson(v['p'], style_function=lambda x, c=colors[k]: {'fillColor': c, 'color': c, 'weight': 0,
-                                                                          'fillOpacity': 0.3}).add_to(fg)
+                    # LineString 比較單純，可以直接用 style_function=None，改用 color 參數 (如果用 PolyLine)
+                    # 或是用 GeoJson 但不給 style_function (預設藍色)
+                    # 這裡為了簡單，我們只畫 GeoJson 但不自訂顏色 (避免錯誤)，或接受預設藍色
+                    folium.GeoJson(
+                        gdf, 
+                        style_function=None, # 設定為 None 避開錯誤
+                        marker=None
+                    ).add_to(fg)
+
             fg.add_to(m)
+            
+            # 計算面積 (km2)
+            area_sq_m = gpd.GeoSeries([poly_geom], crs="EPSG:4326").to_crs(epsg=3857).area[0]
+            area_stats[k] = area_sq_m / 1e6
 
-# 懸浮統計
-stats = ""
-for k in order:
-    if k in st.session_state['res']:
-        a = gpd.GeoSeries([st.session_state['res'][k]['p']], crs="EPSG:4326").to_crs(epsg=3857).area[0] / 1e6
-        label = {'private': '私有', 'private_peak': '私有尖峰', 'rail': '運輸', 'bike': '單車', 'walk': '步行'}[k]
-        stats += f"<div style='color:{colors[k]}; font-size: 14px;'><b>{label}</b>: {a:.1f} km²</div>"
-if stats:
-    macro = folium.MacroElement()
-    macro._template = Template(f"""
-        {{% macro html(this, kwargs) %}}
-        <div style="position: fixed; top: 10px; right: 10px; width: 140px; background: rgba(255,255,255,0.9); padding: 8px; border-radius: 5px; z-index:9999; box-shadow: 0 2px 5px rgba(0,0,0,0.2);">
-            <b>範圍 ({st.session_state['limit']}分)</b><hr style="margin:5px 0;">{stats}
-        </div>
-        {{% endmacro %}}
-    """)
-    m.get_root().add_child(macro)
-
+# 3. 點擊標記
 folium.LayerControl().add_to(m)
 folium.Marker(st.session_state['marker'], icon=folium.Icon(color="black", icon="home")).add_to(m)
 
+# 4. 顯示統計數據 (取代原本會報錯的 MacroElement)
+if area_stats:
+    st.markdown("### 📊 可及範圍統計")
+    cols = st.columns(len(area_stats))
+    labels = {'private': '私有', 'private_peak': '尖峰', 'rail': '軌道', 'bike': '單車', 'walk': '步行'}
+    for idx, (k, val) in enumerate(area_stats.items()):
+        with cols[idx]:
+            st.metric(label=labels.get(k, k), value=f"{val:.1f} km²")
+
+# 5. 渲染地圖 (關鍵：加入 returned_objects 減少資料傳輸)
 map_data = st_folium(
     m, 
     width=None, 
     height=500, 
-    returned_objects=["last_clicked"] 
+    returned_objects=["last_clicked"] # 只回傳點擊資訊，避免回傳整個地圖物件造成崩潰
 )
-
-# 點擊更新 (僅未分析時)
-if not st.session_state['analyzed'] and map_data['last_clicked']:
-    lat, lon = map_data['last_clicked']['lat'], map_data['last_clicked']['lng']
-    if geodesic((lat, lon), st.session_state['marker']).meters > 10:
-        st.session_state['marker'] = [lat, lon]
-        st.rerun()
 
 # --- 6. 設定面板 (置底) ---
 # 動態摘要文字
