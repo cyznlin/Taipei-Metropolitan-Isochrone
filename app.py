@@ -293,8 +293,7 @@ def compute(start, mode, limit, rs, detailed=False, wait_penalty=0):
             if 'private' in mode:
                 radius = 0.0030  # 加倍至約 300m
 
-            return gpd.GeoSeries(all_pts).buffer(radius).union_all(), None
-
+            return gpd.GeoSeries(all_pts).buffer(radius).union_all().simplify(0.0001), None
     return None, None
 
 
@@ -400,7 +399,12 @@ if stats:
 folium.LayerControl().add_to(m)
 folium.Marker(st.session_state['marker'], icon=folium.Icon(color="black", icon="home")).add_to(m)
 
-map_data = st_folium(m, width=None, height=500)  # 手機版地圖高度適中
+map_data = st_folium(
+    m, 
+    width=None, 
+    height=500, 
+    returned_objects=["last_clicked"] 
+)
 
 # 點擊更新 (僅未分析時)
 if not st.session_state['analyzed'] and map_data['last_clicked']:
