@@ -14,8 +14,8 @@ import os
 
 st.set_page_config(page_title="Taipei Metropolitan Area Isochrone Map", layout="wide")
 
-BASE_DIR = "/Users/linzhengying/Desktop/Geo/"
-GRAPH_FILENAME = os.path.join("north_taiwan.pkl")
+DATA_REPO_ID = "你的帳號/north-taiwan-map-data"  # 👈 請修改這裡
+DATA_FILENAME = "north_taiwan.pkl.gz"
 CSV_FILENAME = os.path.join("stations_master.csv")
 
 
