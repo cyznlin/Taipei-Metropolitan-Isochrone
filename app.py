@@ -1,6 +1,7 @@
 import streamlit as st
 import networkx as nx
 import pickle
+import gzip
 import folium
 from streamlit_folium import st_folium
 from shapely.geometry import Point, LineString, MultiPoint
