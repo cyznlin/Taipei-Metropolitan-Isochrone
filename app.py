@@ -5,6 +5,7 @@ import gzip
 import folium
 from streamlit_folium import st_folium
 from shapely.geometry import Point, LineString, Polygon, MultiPolygon
+from shapely import wkt
 import geopandas as gpd
 from geopy.distance import geodesic
 import pandas as pd
@@ -12,89 +13,38 @@ import os
 from huggingface_hub import hf_hub_download
 
 # --- 1. 頁面設定 ---
-st.set_page_config(page_title="Taipei Metropolitan Area Isochrone Map", layout="wide")
+st.set_page_config(page_title="Debug Mode Map", layout="wide")
 
-# --- 設定區 (請確認 Repo ID) ---
+# --- 設定區 ---
 DATA_REPO_ID = "ZnCYLin/north-taiwan-map-data" 
 DATA_FILENAME = "north_taiwan_ready.pkl.gz"
 CSV_FILENAME = "stations_master.csv"
 
-# --- 2. 資料載入 (加入自動修復邏輯) ---
-@st.cache_resource(show_spinner="正在從雲端下載並修復地圖資料...")
+# --- 2. 資料載入 ---
+@st.cache_resource(show_spinner="正在下載地圖...")
 def load_core_data():
     G_drive, G_walk, stations = None, None, None
     try:
-        # 1. 下載
-        print(f"📥 正在下載 {DATA_FILENAME}...")
+        print(f"📥 下載 {DATA_FILENAME}...")
         local_path = hf_hub_download(repo_id=DATA_REPO_ID, filename=DATA_FILENAME, repo_type="model")
         
-        # 2. 讀取
-        print("🚀 載入地圖結構中...")
+        print("🚀 讀取 Pickle...")
         with gzip.open(local_path, "rb") as f:
             G_raw = pickle.load(f)
 
-        # 3. 🛡️ 自動檢測與修復 (關鍵修復)
-        # 檢查第一條邊，看是否有必要的權重屬性
-        test_edge = next(iter(G_raw.edges(data=True)))
-        attrs = test_edge[2] # 取得屬性字典
-        
-        # 如果缺資料 (例如缺 time_private 或 time_walk)，就當場補算
-        needed_keys = ['time_private', 'time_private_peak', 'time_bike', 'time_walk']
-        is_missing_data = any(k not in attrs for k in needed_keys)
-
-        if is_missing_data:
-            print("⚠️ 偵測到地圖檔缺少部分權重資料，正在自動修復 (Calculation Repair)...")
-            
-            # 確保是 MultiDiGraph
-            if not isinstance(G_raw, nx.MultiDiGraph):
-                G_raw = nx.MultiDiGraph(G_raw)
-
-            for u, v, k, d in G_raw.edges(keys=True, data=True):
-                length = float(d.get('length', 50))
-                raw_speed = float(d.get('speed_kph', 30))
-                if raw_speed <= 0: raw_speed = 30.0
-
-                is_hwy = raw_speed >= 80
-                
-                # 補算開車 (一般)
-                speed_normal = 80.0 if is_hwy else 30.0
-                d['time_private'] = length / (speed_normal * 1000 / 60)
-
-                # 補算開車 (尖峰)
-                speed_peak = 35.0 if is_hwy else 15.0
-                d['time_private_peak'] = length / (speed_peak * 1000 / 60)
-
-                # 補算單車 (假設均速 10km/h)
-                d['time_bike'] = length / (10.0 * 1000 / 60)
-
-                # 補算步行 (若為高速公路則設為無限大)
-                if is_hwy:
-                    d['time_walk'] = 999999
-                else:
-                    d['time_walk'] = length / (4.0 * 1000 / 60)
-
-            # 確保座標格式正確
-            for n, d in G_raw.nodes(data=True):
-                d['x'] = float(d.get('x', 0))
-                d['y'] = float(d.get('y', 0))
-                
-            print("✅ 自動修復完成！")
-        else:
-            print("✅ 地圖資料完整，無需修復。")
-
-        # 4. 分拆圖層
+        # 這裡不需自動修復，因為你的檢查腳本說檔案是好的
         G_drive = G_raw 
         
-        # 步行圖層過濾 (必須確保 time_walk 存在，剛剛的修復保證了這一點)
+        # 建立步行圖層 (使用 subgraph_view)
+        # ⚠️ 注意：這裡可能會因為某些路段缺 time_walk 而導致過濾出錯，我們加強檢查
         def filter_walk(u, v, k, d):
             return d.get('time_walk', 999999) < 1000
         G_walk = nx.subgraph_view(G_raw, filter_edge=filter_walk)
 
     except Exception as e:
-        st.error(f"地圖載入失敗: {e}")
+        st.error(f"❌ 資料載入嚴重錯誤: {e}")
         return None, None, None
 
-    # B. 載入 CSV
     if os.path.exists(CSV_FILENAME):
         try:
             stations = pd.read_csv(CSV_FILENAME)
@@ -107,10 +57,10 @@ def load_core_data():
 G_drive, G_walk, stations_df = load_core_data()
 
 if G_drive is None:
-    st.error("❌ 系統資料缺失！請確認 Hugging Face Model Repo 設定正確。")
+    st.error("❌ 無法載入地圖資料，請檢查 Repo ID")
     st.stop()
 
-# --- 3. 核心類別 (RailSystem) ---
+# --- 3. 核心邏輯 (Debug 版：移除 try-except) ---
 def get_nearest_node(G, point):
     t_lat, t_lon = point
     best, min_d = None, 100.0
@@ -126,171 +76,128 @@ class RailSystem:
         self.stations = {}
         self.node_map = {}
         self.lines = []
+        if df is None: return
 
         target_year = int(year)
         valid = ['Operating']
         if target_year >= 2028: valid.append('Construction')
         if target_year >= 2031: valid.append('Planning')
 
-        if df is not None:
-            active = df[df['status'].isin(valid)]
-            for _, r in active.iterrows():
-                uid = r['unique_id']
-                self.stations[uid] = (r['lat'], r['lon'])
-                self.node_map[uid] = r['node_id']
+        active = df[df['status'].isin(valid)]
+        for _, r in active.iterrows():
+            uid = r['unique_id']
+            self.stations[uid] = (r['lat'], r['lon'])
+            self.node_map[uid] = r['node_id']
 
-            colors = {"BL": "#0070BD", "R": "#E3002C", "R_NewBeitou": "#E3002C", "R_East": "#E3002C",
-                      "G": "#008659", "G_Xiaobitan": "#008659", "O": "#F8B61C",
-                      "O_Luzhou": "#F8B61C", "BR": "#C48C31", "Y": "#FDD935",
-                      "Y_North": "#FDD935", "Y_South": "#FDD935", "A": "#8246AF",
-                      "LG_1": "#D1E231", "LG_2": "#D1E231", "LB": "#6C9ED3",
-                      "G_Taoyuan": "#008659", "TRA_West": "#333333", "TRA_East": "#333333"}
+        colors = {"BL": "#0070BD", "R": "#E3002C", "G": "#008659", "O": "#F8B61C", "BR": "#C48C31", "Y": "#FDD935", "A": "#8246AF", "LB": "#6C9ED3"}
+        
+        # 為了 Debug，這裡我們不建立複雜的 rail_G，只保留基本列表
+        self.rail_sources = [] 
+        # (這裡省略複雜的軌道演算法，專注於解決為什麼私有運具跑不出來的問題)
 
-            self.rail_G = nx.Graph()
-
-            for lid, grp in active.groupby('line_id'):
-                grp = grp.sort_values('sequence')
-                ids = grp['unique_id'].tolist()
-                coords = [self.stations[i] for i in ids]
-                is_future = any(s != 'Operating' for s in grp['status'])
-                dash = "5, 5" if is_future else None
-                self.lines.append({"coords": coords, "color": colors.get(lid, "gray"), "dash": dash, "weight": 3})
-
-                spd = 55.0 if lid.startswith(('A', 'TRA')) else 35.0
-                for i in range(len(ids) - 1):
-                    u, v = ids[i], ids[i + 1]
-                    dist = geodesic(self.stations[u], self.stations[v]).km
-                    w = dist * (60 / spd) + 0.5
-                    self.rail_G.add_edge(u, v, weight=w)
-
-            uids = list(self.stations.keys())
-            for i in range(len(uids)):
-                for j in range(i + 1, len(uids)):
-                    u, v = uids[i], uids[j]
-                    line_u = u.split('_')[-1]
-                    line_v = v.split('_')[-1]
-                    if line_u == line_v: continue
-
-                    dist = geodesic(self.stations[u], self.stations[v]).meters
-                    if dist < 80:
-                        w = 0.5
-                        if u.split('_')[0] == v.split('_')[0]: w = 0.0
-                        self.rail_G.add_edge(u, v, weight=w)
-                    elif dist < 450:
-                        w = 5.0
-                        if "A1" in u and "台北" in v: w = 12.0
-                        elif "BR" in u or "Y" in u: w = 7.0
-                        self.rail_G.add_edge(u, v, weight=w)
-                        self.lines.append({"coords": [self.stations[u], self.stations[v]], "color": "#666", "dash": "2, 2", "weight": 1})
-
+    # 簡化版：只回傳空，因為重點在修復 Private
     def get_sources(self, start, limit, wait_time=0):
-        entry = []
-        detour_factor = 1.35
-        for uid, pos in self.stations.items():
-            d_straight = geodesic(start, pos).meters
-            if d_straight > 2000: continue
-            t = (d_straight * detour_factor) / (4.0 * 1000 / 60) + wait_time
-            if t < limit: entry.append((uid, t))
-
-        if not entry: return []
-
-        temp_G = self.rail_G.copy()
-        temp_G.add_node("S")
-        for u, t in entry: temp_G.add_edge("S", u, weight=t)
-
-        paths = nx.single_source_dijkstra_path_length(temp_G, "S", cutoff=limit)
-        res = []
-        for uid, cost in paths.items():
-            if uid == "S": continue
-            rem = limit - cost - 3.0
-            if rem > 0 and self.node_map[uid] in G_walk.nodes:
-                res.append((self.node_map[uid], rem))
-        return res
+        return []
 
 def compute(start, mode, limit, rs, detailed=False, wait_penalty=0):
-    G = G_walk if mode in ['rail', 'walk'] else G_drive
-    metric = 'time_walk' if mode in ['rail', 'walk'] else f'time_{mode}'
+    # 1. 決定使用哪張圖
+    if mode in ['rail', 'walk']:
+        G = G_walk
+        metric = 'time_walk'
+    else:
+        G = G_drive
+        metric = f'time_{mode}'
     
+    # Debug: 顯示正在使用哪個 Metric
+    # st.write(f"🔍 [Debug] 模式: {mode}, 使用權重欄位: {metric}")
+
     targets = []
     if mode == 'rail':
-        targets = rs.get_sources(start, limit, wait_penalty)
+        targets = [] # 暫時略過 rail
     else:
         sn = get_nearest_node(G, start)
-        if sn: targets = [(sn, limit)]
+        if sn: 
+            targets = [(sn, limit)]
+        else:
+            st.warning(f"⚠️ 找不到最近的節點！模式: {mode}")
 
     if not targets: return None, None
 
     all_pts = []
-    edges = []
+    
+    # ⚠️ 關鍵修改：這裡移除了 try-except，讓錯誤直接爆出來
     for node, rem in targets:
-        try:
-            sub = nx.ego_graph(G, node, radius=rem, distance=metric)
-            if detailed:
-                lines = []
-                for u, v, d in sub.edges(data=True):
-                    if 'geometry' in d: lines.append(d['geometry'])
-                    else: lines.append(LineString([Point(G.nodes[u]['x'], G.nodes[u]['y']), Point(G.nodes[v]['x'], G.nodes[v]['y'])]))
-                if lines: edges.append(gpd.GeoDataFrame(geometry=lines, crs="EPSG:4326"))
-            else:
-                pts = [Point(G.nodes[n]['x'], G.nodes[n]['y']) for n in sub.nodes]
-                if pts: all_pts.extend(pts)
-        except: pass
+        # 使用 networkx 的 ego_graph
+        # 如果這裡報錯 KeyError，代表有些路段缺少了該 metric
+        sub = nx.ego_graph(G, node, radius=rem, distance=metric)
+        
+        pts = [Point(G.nodes[n]['x'], G.nodes[n]['y']) for n in sub.nodes]
+        if pts: all_pts.extend(pts)
+        
+        # Debug: 顯示找到了多少點
+        # st.write(f"📊 [Debug] {mode} 找到 {len(pts)} 個可達節點")
 
-    if detailed: return None, edges
-    else:
-        if all_pts:
-            radius = 0.0030 if 'private' in mode else 0.0015
-            return gpd.GeoSeries(all_pts).buffer(radius).union_all().simplify(0.0001), None
+    if all_pts:
+        radius = 0.0030 if 'private' in mode else 0.0015
+        return gpd.GeoSeries(all_pts).buffer(radius).union_all().simplify(0.0001), None
+        
     return None, None
 
-# --- 4. UI 邏輯 ---
+# --- 4. UI ---
 if 'marker' not in st.session_state: st.session_state['marker'] = [25.0418, 121.5436]
 if 'res' not in st.session_state: st.session_state['res'] = {}
 if 'analyzed' not in st.session_state: st.session_state['analyzed'] = False
 
-defaults = {'year': '2025', 'limit': 30, 'wait_cost': 5, 'm_private': False, 'm_peak': True, 'm_rail': True, 'm_bike': False, 'm_walk': True, 'is_detailed': False}
+# ⚠️ Debug 設定：預設開啟私有運具，強制檢查
+defaults = {'year': '2025', 'limit': 30, 'wait_cost': 5, 
+            'm_private': True, 'm_peak': False, 'm_rail': False, 
+            'm_bike': False, 'm_walk': True, 'is_detailed': False}
+
 for k, v in defaults.items():
     if k not in st.session_state: st.session_state[k] = v
 
-st.title("北北基桃等時圈 Taipei Metropolitan Area Isochrone Map")
-st.info("💡 **操作順序：** 1. 點擊地圖選擇地點 → 2. 設定下方參數 → 3. 點擊「開始分析」")
+st.title("🚧 Debug Mode: 請按開始分析")
+st.write("此模式會顯示詳細錯誤訊息，請觀察畫面是否有紅色報錯。")
 
 rs = RailSystem(stations_df, st.session_state['year'])
 
+# 這裡我們只測試主要的幾個模式
 current_modes = {
     'private': st.session_state['m_private'],
     'private_peak': st.session_state['m_peak'],
-    'rail': st.session_state['m_rail'],
-    'bike': st.session_state['m_bike'],
     'walk': st.session_state['m_walk']
 }
 
-if st.session_state['analyzed'] and not st.session_state['res']:
-    with st.spinner("正在計算可及範圍..."):
+if st.button("🚀 開始除錯分析 (Start Debug)", type="primary"):
+    st.session_state['analyzed'] = True
+    st.session_state['res'] = {} # 清空舊結果
+    
+    with st.spinner("正在暴力運算..."):
         res = {}
         for m_key, on in current_modes.items():
             if on:
-                p, e = compute(st.session_state['marker'], m_key, st.session_state['limit'], rs, st.session_state['is_detailed'], st.session_state['wait_cost'])
-                if p or e: res[m_key] = {'p': p, 'e': e}
+                st.write(f"▶️ 正在計算: **{m_key}** ...")
+                try:
+                    p, e = compute(st.session_state['marker'], m_key, st.session_state['limit'], rs)
+                    if p: 
+                        res[m_key] = {'p': p, 'e': e}
+                        st.success(f"✅ {m_key} 計算成功！")
+                    else:
+                        st.warning(f"⚠️ {m_key} 回傳了空結果 (None)")
+                except Exception as e:
+                    st.error(f"❌ {m_key} 發生錯誤: {e}")
+                    # 這行會把詳細的 Python 錯誤印出來，非常重要
+                    st.exception(e) 
         st.session_state['res'] = res
 
-# --- 5. 地圖繪製 (安全模式) ---
+# --- 5. 地圖 ---
 m = folium.Map(location=st.session_state['marker'], zoom_start=13)
 
-# 1. 畫軌道
-for l in rs.lines:
-    folium.PolyLine(l['coords'], color=l['color'], weight=l.get('weight', 2), dash_array=l.get('dash')).add_to(m)
-for uid, pos in rs.stations.items():
-    folium.CircleMarker(pos, radius=1.5, color='black', fill=True).add_to(m)
-
-# 2. 畫結果
-colors = {'private': '#E74C3C', 'private_peak': '#922B21', 'rail': '#0070BD', 'bike': '#F39C12', 'walk': '#2ECC71'}
-area_stats = {}
+colors = {'private': '#E74C3C', 'private_peak': '#922B21', 'walk': '#2ECC71'}
 
 if st.session_state['res']:
     for k, v in st.session_state['res'].items():
         if k not in colors: continue
-        
         if v['p']:
             poly_geom = v['p']
             geoms = list(poly_geom.geoms) if isinstance(poly_geom, MultiPolygon) else [poly_geom] if isinstance(poly_geom, Polygon) else []
@@ -298,75 +205,23 @@ if st.session_state['res']:
                 locations = [(y, x) for x, y in p.exterior.coords]
                 holes = [[(y, x) for x, y in h.coords] for h in p.interiors]
                 folium.Polygon(locations=locations, holes=holes, color=colors[k], fill_color=colors[k], fill_opacity=0.3, weight=0).add_to(m)
-            
-            try:
-                area = gpd.GeoSeries([poly_geom], crs="EPSG:4326").to_crs(epsg=3857).area[0] / 1e6
-                area_stats[k] = area
-            except: pass
-
-        if st.session_state['is_detailed'] and v['e']:
-            for gdf in v['e']:
-                for _, row in gdf.iterrows():
-                    geom = row.geometry
-                    lines = list(geom.geoms) if geom.geom_type == 'MultiLineString' else [geom]
-                    for line in lines:
-                        folium.PolyLine([(y, x) for x, y in line.coords], color=colors[k], weight=1.2, opacity=0.8).add_to(m)
 
 folium.Marker(st.session_state['marker']).add_to(m)
 
-# 3. 顯示統計
-if area_stats:
-    st.markdown("### 📊 可及範圍統計")
-    cols = st.columns(len(area_stats))
-    labels = {'private': '私有', 'private_peak': '尖峰', 'rail': '軌道', 'bike': '單車', 'walk': '步行'}
-    for idx, (k, val) in enumerate(area_stats.items()):
-        if idx < len(cols):
-            with cols[idx]:
-                st.metric(label=labels.get(k, k), value=f"{val:.1f} km²")
-
-# 4. 渲染
 try:
     map_data = st_folium(m, width=None, height=500, returned_objects=["last_clicked"])
 except Exception as e:
-    st.error(f"地圖渲染錯誤: {e}")
+    st.error(f"Map Error: {e}")
     map_data = None
 
-# --- 6. 控制面板 ---
-if not st.session_state['analyzed'] and map_data and map_data.get('last_clicked'):
+if map_data and map_data.get('last_clicked'):
     lat, lon = map_data['last_clicked']['lat'], map_data['last_clicked']['lng']
     if geodesic((lat, lon), st.session_state['marker']).meters > 10:
         st.session_state['marker'] = [lat, lon]
         st.rerun()
 
-status_txt = "✅ 完成" if st.session_state['analyzed'] else "⚙️ 設定"
-selected_labels = [k for k, v in current_modes.items() if v]
-mode_summary = "/".join(selected_labels) if selected_labels else "未選"
-expander_label = f"{status_txt} ({st.session_state['year']}年 | {st.session_state['limit']}分 | {mode_summary})"
-
-with st.expander(expander_label, expanded=not st.session_state['analyzed']):
-    c1, c2, c3 = st.columns(3)
-    with c1: st.select_slider("📅 年份", options=['2025', '2028', '2031'], key='year')
-    with c2: st.slider("⏱️ 時間", 5, 60, key='limit')
-    with c3: st.slider("⏳ 進站", 0, 15, key='wait_cost', help="轉乘/進出站成本")
-    st.write("---")
-    r1, r2, r3 = st.columns(3)
-    with r1: st.toggle("🚗 私有運具（35/80 kph）", key='m_private')
-    with r2: st.toggle("🚗 私有運具尖峰（15/30 kph）", key='m_peak')
-    with r3: st.toggle("🚆 軌道運輸＋步行", key='m_rail')
-    r4, r5, r6 = st.columns(3)
-    with r4: st.toggle("🚲 單車", key='m_bike')
-    with r5: st.toggle("🚶 純步行", key='m_walk')
-    with r6: st.toggle("🐢 路徑細節", key='is_detailed')
-
-b1, b2 = st.columns([2, 1])
-with b1:
-    if not st.session_state['analyzed']:
-        if st.button("🚀 開始分析", type="primary", use_container_width=True):
-            st.session_state['analyzed'] = True
-            st.rerun()
-    else: st.button("✅ 分析完成", disabled=True, use_container_width=True)
-with b2:
-    if st.button("🔄 重置", use_container_width=True):
-        st.session_state['analyzed'] = False
-        st.session_state['res'] = {}
-        st.rerun()
+# 顯示設定開關 (方便你測試)
+c1, c2, c3 = st.columns(3)
+with c1: st.toggle("Private (私有)", key='m_private')
+with c2: st.toggle("Peak (尖峰)", key='m_peak')
+with c3: st.toggle("Walk (步行)", key='m_walk')
