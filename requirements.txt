@@ -1,9 +1,10 @@
 streamlit
-folium==0.14.0
-streamlit-folium==0.12.0
+folium
+streamlit-folium
 geopandas
 pandas
 shapely
 networkx
 huggingface_hub
 geopy
+jinja2
