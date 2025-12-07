@@ -15,7 +15,7 @@ from huggingface_hub import hf_hub_download
 st.set_page_config(page_title="Taipei Metropolitan Area Isochrone Map", layout="wide")
 
 # --- 設定區 ---
-DATA_REPO_ID = "ZnCYLin/north-taiwan-map-data" 
+DATA_REPO_ID = "ZnCYLin/north-taiwan-map-data"  # 👈 填入你剛剛給的正確 ID
 DATA_FILENAME = "north_taiwan_ready.pkl.gz"
 CSV_FILENAME = "stations_master.csv"
 
