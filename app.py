@@ -14,12 +14,12 @@ from huggingface_hub import hf_hub_download
 # --- 1. 頁面設定 ---
 st.set_page_config(page_title="Taipei Metropolitan Area Isochrone Map", layout="wide")
 
-# --- 設定區 ---
-DATA_REPO_ID = "ZnCYLin/north-taiwan-map-data"  # 👈 填入你剛剛給的正確 ID
+# --- 設定區 (⚠️ 請修改這裡) ---
+DATA_REPO_ID = "ZnCYLin/north-taiwan-map-data"  # 你的 Repo ID
 DATA_FILENAME = "north_taiwan_ready.pkl.gz"
 CSV_FILENAME = "stations_master.csv"
 
-# --- 2. 資料載入 (維持高效讀取) ---
+# --- 2. 資料載入 ---
 @st.cache_resource(show_spinner="正在從雲端下載地圖資料...")
 def load_core_data():
     G_drive, G_walk, stations = None, None, None
@@ -97,7 +97,7 @@ class RailSystem:
 
             self.rail_G = nx.Graph()
 
-            # 建立連接 (保留所有邏輯)
+            # 建立連接
             for lid, grp in active.groupby('line_id'):
                 grp = grp.sort_values('sequence')
                 ids = grp['unique_id'].tolist()
@@ -105,7 +105,7 @@ class RailSystem:
                 is_future = any(s != 'Operating' for s in grp['status'])
                 dash = "5, 5" if is_future else None
                 
-                # 這裡只存純資料，不存 Folium 物件
+                # 純資料，無 Folium 物件
                 self.lines.append({"coords": coords, "color": colors.get(lid, "gray"), "dash": dash, "weight": 3})
 
                 spd = 55.0 if lid.startswith(('A', 'TRA')) else 35.0
@@ -193,7 +193,7 @@ def compute(start, mode, limit, rs, detailed=False, wait_penalty=0):
     else:
         if all_pts:
             radius = 0.0030 if 'private' in mode else 0.0015
-            # 保留 simplify 以防止傳輸崩潰，不影響計算結果
+            # 關鍵：simplify(0.0001) 減少傳輸點數，避免傳輸超時
             return gpd.GeoSeries(all_pts).buffer(radius).union_all().simplify(0.0001), None
     return None, None
 
@@ -228,7 +228,7 @@ if st.session_state['analyzed'] and not st.session_state['res']:
                 if p or e: res[m_key] = {'p': p, 'e': e}
         st.session_state['res'] = res
 
-# --- 5. 地圖繪製 (絕對安全模式：移除 LayerControl 和 Icon) ---
+# --- 5. 地圖繪製 (安全模式：移除會崩潰的裝飾) ---
 m = folium.Map(location=st.session_state['marker'], zoom_start=13, tiles="CartoDB positron")
 
 # 1. 畫軌道
@@ -270,8 +270,8 @@ if st.session_state['res']:
                         folium.PolyLine([(y, x) for x, y in line.coords], color=colors[k], weight=1.2, opacity=0.8).add_to(m)
 
 # 3. 標記與控制
-# ❌ 移除 LayerControl (避免報錯)
-# ❌ 移除 Icon 物件 (避免報錯)，改用預設藍色標記
+# ⚠️ 關鍵：移除 LayerControl (避免報錯)
+# ⚠️ 關鍵：使用預設標記，不使用 icon=folium.Icon(...) (避免報錯)
 folium.Marker(st.session_state['marker']).add_to(m)
 
 # 4. 顯示統計
@@ -291,7 +291,7 @@ except Exception as e:
     st.error(f"地圖渲染錯誤: {e}")
     map_data = None
 
-# --- 6. 控制面板 (你的完整 UI) ---
+# --- 6. 控制面板 ---
 if not st.session_state['analyzed'] and map_data and map_data.get('last_clicked'):
     lat, lon = map_data['last_clicked']['lat'], map_data['last_clicked']['lng']
     if geodesic((lat, lon), st.session_state['marker']).meters > 10:
