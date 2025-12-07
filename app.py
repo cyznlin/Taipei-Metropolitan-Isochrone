@@ -35,8 +35,7 @@ def load_core_data():
 
         G_drive = G_raw 
         
-        # ⚠️ [關鍵修復] 步行圖層過濾器
-        # 修正：NetworkX subgraph_view 只傳入 (u, v, k)，需自行查屬性
+        # 步行圖層過濾器
         def filter_walk(u, v, k):
             edge_data = G_raw[u][v][k]
             return edge_data.get('time_walk', 999999) < 1000
@@ -62,7 +61,7 @@ if G_drive is None:
     st.error("❌ 系統資料缺失！請確認 Hugging Face Model Repo 設定正確。")
     st.stop()
 
-# --- 3. 核心類別 (RailSystem: 你的原始完整邏輯) ---
+# --- 3. 核心類別 (RailSystem) ---
 def get_nearest_node(G, point):
     t_lat, t_lon = point
     best, min_d = None, 100.0
@@ -108,7 +107,6 @@ class RailSystem:
                 is_future = any(s != 'Operating' for s in grp['status'])
                 dash = "5, 5" if is_future else None
                 
-                # 純資料，無 Folium 物件，避免 JSON 錯誤
                 self.lines.append({"coords": coords, "color": colors.get(lid, "gray"), "dash": dash, "weight": 3})
 
                 spd = 55.0 if lid.startswith(('A', 'TRA')) else 35.0
@@ -231,9 +229,9 @@ if st.session_state['analyzed'] and not st.session_state['res']:
                 if p or e: res[m_key] = {'p': p, 'e': e}
         st.session_state['res'] = res
 
-# --- 5. 地圖繪製 (安全模式：移除 LayerControl 和 Icon) ---
-# 使用預設底圖，避免 CartoDB 的 template error
-m = folium.Map(location=st.session_state['marker'], zoom_start=13)
+# --- 5. 地圖繪製 ---
+# ✨ 改回簡約灰色底圖 (CartoDB positron) ✨
+m = folium.Map(location=st.session_state['marker'], zoom_start=13, tiles="CartoDB positron")
 
 # 1. 畫軌道
 for l in rs.lines:
@@ -256,7 +254,7 @@ if st.session_state['res']:
             for p in geoms:
                 locations = [(y, x) for x, y in p.exterior.coords]
                 holes = [[(y, x) for x, y in h.coords] for h in p.interiors]
-                # 純字串顏色，無 lambda
+                # 純字串顏色
                 folium.Polygon(locations=locations, holes=holes, color=colors[k], fill_color=colors[k], fill_opacity=0.3, weight=0).add_to(m)
             
             try:
@@ -273,8 +271,7 @@ if st.session_state['res']:
                     for line in lines:
                         folium.PolyLine([(y, x) for x, y in line.coords], color=colors[k], weight=1.2, opacity=0.8).add_to(m)
 
-# 3. 標記與控制
-# ⚠️ 使用預設標記，避免 Icon 報錯
+# 3. 標記
 folium.Marker(st.session_state['marker']).add_to(m)
 
 # 4. 顯示統計
@@ -294,7 +291,7 @@ except Exception as e:
     st.error(f"地圖渲染錯誤: {e}")
     map_data = None
 
-# --- 6. 控制面板 (回復原本的 UI 設計) ---
+# --- 6. 控制面板 ---
 if not st.session_state['analyzed'] and map_data and map_data.get('last_clicked'):
     lat, lon = map_data['last_clicked']['lat'], map_data['last_clicked']['lng']
     if geodesic((lat, lon), st.session_state['marker']).meters > 10:
