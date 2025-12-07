@@ -14,8 +14,8 @@ from huggingface_hub import hf_hub_download
 # --- 1. 頁面設定 ---
 st.set_page_config(page_title="Taipei Metropolitan Area Isochrone Map", layout="wide")
 
-# --- 設定區 (⚠️ 請修改這裡) ---
-DATA_REPO_ID = "ZnCYLin/north-taiwan-map-data"  # 你的 Repo ID
+# --- 設定區 (⚠️ 請務必確認這裡) ---
+DATA_REPO_ID = "ZnCYLin/north-taiwan-map-data"
 DATA_FILENAME = "north_taiwan_ready.pkl.gz"
 CSV_FILENAME = "stations_master.csv"
 
@@ -59,7 +59,7 @@ if G_drive is None:
     st.error("❌ 系統資料缺失！請確認 Hugging Face Model Repo 設定正確。")
     st.stop()
 
-# --- 3. 核心類別 (RailSystem: 你的原始完整邏輯) ---
+# --- 3. 核心類別 (RailSystem: 保留完整邏輯) ---
 def get_nearest_node(G, point):
     t_lat, t_lon = point
     best, min_d = None, 100.0
@@ -105,7 +105,7 @@ class RailSystem:
                 is_future = any(s != 'Operating' for s in grp['status'])
                 dash = "5, 5" if is_future else None
                 
-                # 純資料，無 Folium 物件
+                # 純資料
                 self.lines.append({"coords": coords, "color": colors.get(lid, "gray"), "dash": dash, "weight": 3})
 
                 spd = 55.0 if lid.startswith(('A', 'TRA')) else 35.0
@@ -193,7 +193,6 @@ def compute(start, mode, limit, rs, detailed=False, wait_penalty=0):
     else:
         if all_pts:
             radius = 0.0030 if 'private' in mode else 0.0015
-            # 關鍵：simplify(0.0001) 減少傳輸點數，避免傳輸超時
             return gpd.GeoSeries(all_pts).buffer(radius).union_all().simplify(0.0001), None
     return None, None
 
@@ -228,8 +227,12 @@ if st.session_state['analyzed'] and not st.session_state['res']:
                 if p or e: res[m_key] = {'p': p, 'e': e}
         st.session_state['res'] = res
 
-# --- 5. 地圖繪製 (安全模式：移除會崩潰的裝飾) ---
-m = folium.Map(location=st.session_state['marker'], zoom_start=13, tiles="CartoDB positron")
+# --- 5. 地圖繪製 (修復關鍵：使用基本底圖設定) ---
+# ❌ 舊的寫法 (會報錯)：tiles="CartoDB positron"
+# ✅ 新的寫法：tiles=None, 然後手動加 TileLayer (或直接用預設 OSM)
+
+# 這裡我們使用 OpenStreetMap (預設值)，它是最安全的，絕對不會有 Function Error
+m = folium.Map(location=st.session_state['marker'], zoom_start=13)
 
 # 1. 畫軌道
 for l in rs.lines:
@@ -252,7 +255,6 @@ if st.session_state['res']:
             for p in geoms:
                 locations = [(y, x) for x, y in p.exterior.coords]
                 holes = [[(y, x) for x, y in h.coords] for h in p.interiors]
-                # 純字串顏色，無 lambda
                 folium.Polygon(locations=locations, holes=holes, color=colors[k], fill_color=colors[k], fill_opacity=0.3, weight=0).add_to(m)
             
             try:
@@ -269,12 +271,10 @@ if st.session_state['res']:
                     for line in lines:
                         folium.PolyLine([(y, x) for x, y in line.coords], color=colors[k], weight=1.2, opacity=0.8).add_to(m)
 
-# 3. 標記與控制
-# ⚠️ 關鍵：移除 LayerControl (避免報錯)
-# ⚠️ 關鍵：使用預設標記，不使用 icon=folium.Icon(...) (避免報錯)
+# 3. 標記 (使用預設標記，避免 LayerControl)
 folium.Marker(st.session_state['marker']).add_to(m)
 
-# 4. 顯示統計
+# 4. 顯示統計 (修復縮排錯誤)
 if area_stats:
     st.markdown("### 📊 可及範圍統計")
     cols = st.columns(len(area_stats))
