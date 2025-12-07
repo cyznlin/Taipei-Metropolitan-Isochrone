@@ -13,7 +13,7 @@ import os
 from huggingface_hub import hf_hub_download
 
 # --- 1. 頁面設定 ---
-st.set_page_config(page_title="Debug Mode Map", layout="wide")
+st.set_page_config(page_title="Debug Mode Map (Fixed)", layout="wide")
 
 # --- 設定區 ---
 DATA_REPO_ID = "ZnCYLin/north-taiwan-map-data" 
@@ -32,13 +32,15 @@ def load_core_data():
         with gzip.open(local_path, "rb") as f:
             G_raw = pickle.load(f)
 
-        # 這裡不需自動修復，因為你的檢查腳本說檔案是好的
         G_drive = G_raw 
         
-        # 建立步行圖層 (使用 subgraph_view)
-        # ⚠️ 注意：這裡可能會因為某些路段缺 time_walk 而導致過濾出錯，我們加強檢查
-        def filter_walk(u, v, k, d):
-            return d.get('time_walk', 999999) < 1000
+        # ⚠️ [關鍵修復] NetworkX 的 subgraph_view 對於 MultiGraph 只傳 (u, v, k)
+        # 我們必須自己從 G_raw 裡面去查屬性，不能期待它傳 d 進來
+        def filter_walk(u, v, k):
+            # 修正寫法：自己去查資料
+            edge_data = G_raw[u][v][k] 
+            return edge_data.get('time_walk', 999999) < 1000
+            
         G_walk = nx.subgraph_view(G_raw, filter_edge=filter_walk)
 
     except Exception as e:
@@ -91,16 +93,45 @@ class RailSystem:
 
         colors = {"BL": "#0070BD", "R": "#E3002C", "G": "#008659", "O": "#F8B61C", "BR": "#C48C31", "Y": "#FDD935", "A": "#8246AF", "LB": "#6C9ED3"}
         
-        # 為了 Debug，這裡我們不建立複雜的 rail_G，只保留基本列表
-        self.rail_sources = [] 
-        # (這裡省略複雜的軌道演算法，專注於解決為什麼私有運具跑不出來的問題)
+        self.rail_G = nx.Graph()
+        # 簡單建立路網
+        for lid, grp in active.groupby('line_id'):
+            grp = grp.sort_values('sequence')
+            ids = grp['unique_id'].tolist()
+            # 存線條 (只存座標)
+            self.lines.append({"coords": [self.stations[i] for i in ids], "color": colors.get(lid, "gray")})
 
-    # 簡化版：只回傳空，因為重點在修復 Private
+            spd = 55.0 if lid.startswith(('A', 'TRA')) else 35.0
+            for i in range(len(ids) - 1):
+                u, v = ids[i], ids[i + 1]
+                dist = geodesic(self.stations[u], self.stations[v]).km
+                self.rail_G.add_edge(u, v, weight=dist*(60/spd)+0.5)
+
     def get_sources(self, start, limit, wait_time=0):
-        return []
+        entry = []
+        detour_factor = 1.35
+        for uid, pos in self.stations.items():
+            d_straight = geodesic(start, pos).meters
+            if d_straight > 2000: continue
+            t = (d_straight * detour_factor) / (4.0 * 1000 / 60) + wait_time
+            if t < limit: entry.append((uid, t))
+
+        if not entry: return []
+
+        temp_G = self.rail_G.copy()
+        temp_G.add_node("S")
+        for u, t in entry: temp_G.add_edge("S", u, weight=t)
+
+        paths = nx.single_source_dijkstra_path_length(temp_G, "S", cutoff=limit)
+        res = []
+        for uid, cost in paths.items():
+            if uid == "S": continue
+            rem = limit - cost - 3.0
+            if rem > 0 and self.node_map[uid] in G_walk.nodes:
+                res.append((self.node_map[uid], rem))
+        return res
 
 def compute(start, mode, limit, rs, detailed=False, wait_penalty=0):
-    # 1. 決定使用哪張圖
     if mode in ['rail', 'walk']:
         G = G_walk
         metric = 'time_walk'
@@ -108,34 +139,24 @@ def compute(start, mode, limit, rs, detailed=False, wait_penalty=0):
         G = G_drive
         metric = f'time_{mode}'
     
-    # Debug: 顯示正在使用哪個 Metric
-    # st.write(f"🔍 [Debug] 模式: {mode}, 使用權重欄位: {metric}")
-
     targets = []
     if mode == 'rail':
-        targets = [] # 暫時略過 rail
+        targets = rs.get_sources(start, limit, wait_penalty)
     else:
         sn = get_nearest_node(G, start)
-        if sn: 
-            targets = [(sn, limit)]
-        else:
-            st.warning(f"⚠️ 找不到最近的節點！模式: {mode}")
+        if sn: targets = [(sn, limit)]
+        else: st.warning(f"⚠️ 找不到最近的節點！模式: {mode}")
 
     if not targets: return None, None
 
     all_pts = []
     
-    # ⚠️ 關鍵修改：這裡移除了 try-except，讓錯誤直接爆出來
+    # Debug: 移除 try-except
     for node, rem in targets:
-        # 使用 networkx 的 ego_graph
-        # 如果這裡報錯 KeyError，代表有些路段缺少了該 metric
+        # 這裡現在應該不會報錯了，因為 filter_walk 修好了
         sub = nx.ego_graph(G, node, radius=rem, distance=metric)
-        
         pts = [Point(G.nodes[n]['x'], G.nodes[n]['y']) for n in sub.nodes]
         if pts: all_pts.extend(pts)
-        
-        # Debug: 顯示找到了多少點
-        # st.write(f"📊 [Debug] {mode} 找到 {len(pts)} 個可達節點")
 
     if all_pts:
         radius = 0.0030 if 'private' in mode else 0.0015
@@ -148,31 +169,31 @@ if 'marker' not in st.session_state: st.session_state['marker'] = [25.0418, 121.
 if 'res' not in st.session_state: st.session_state['res'] = {}
 if 'analyzed' not in st.session_state: st.session_state['analyzed'] = False
 
-# ⚠️ Debug 設定：預設開啟私有運具，強制檢查
+# Debug 設定：預設全開
 defaults = {'year': '2025', 'limit': 30, 'wait_cost': 5, 
-            'm_private': True, 'm_peak': False, 'm_rail': False, 
-            'm_bike': False, 'm_walk': True, 'is_detailed': False}
+            'm_private': True, 'm_peak': True, 'm_rail': True, 
+            'm_bike': True, 'm_walk': True, 'is_detailed': False}
 
 for k, v in defaults.items():
     if k not in st.session_state: st.session_state[k] = v
 
-st.title("🚧 Debug Mode: 請按開始分析")
-st.write("此模式會顯示詳細錯誤訊息，請觀察畫面是否有紅色報錯。")
+st.title("🚧 Debug Mode (Fix): 應該要全綠了！")
 
 rs = RailSystem(stations_df, st.session_state['year'])
 
-# 這裡我們只測試主要的幾個模式
 current_modes = {
     'private': st.session_state['m_private'],
     'private_peak': st.session_state['m_peak'],
+    'rail': st.session_state['m_rail'],
+    'bike': st.session_state['m_bike'],
     'walk': st.session_state['m_walk']
 }
 
-if st.button("🚀 開始除錯分析 (Start Debug)", type="primary"):
+if st.button("🚀 開始測試 (Run Test)", type="primary"):
     st.session_state['analyzed'] = True
-    st.session_state['res'] = {} # 清空舊結果
+    st.session_state['res'] = {}
     
-    with st.spinner("正在暴力運算..."):
+    with st.spinner("測試中..."):
         res = {}
         for m_key, on in current_modes.items():
             if on:
@@ -186,14 +207,12 @@ if st.button("🚀 開始除錯分析 (Start Debug)", type="primary"):
                         st.warning(f"⚠️ {m_key} 回傳了空結果 (None)")
                 except Exception as e:
                     st.error(f"❌ {m_key} 發生錯誤: {e}")
-                    # 這行會把詳細的 Python 錯誤印出來，非常重要
-                    st.exception(e) 
+                    st.exception(e)
         st.session_state['res'] = res
 
 # --- 5. 地圖 ---
 m = folium.Map(location=st.session_state['marker'], zoom_start=13)
-
-colors = {'private': '#E74C3C', 'private_peak': '#922B21', 'walk': '#2ECC71'}
+colors = {'private': '#E74C3C', 'private_peak': '#922B21', 'rail': '#0070BD', 'bike': '#F39C12', 'walk': '#2ECC71'}
 
 if st.session_state['res']:
     for k, v in st.session_state['res'].items():
@@ -220,8 +239,10 @@ if map_data and map_data.get('last_clicked'):
         st.session_state['marker'] = [lat, lon]
         st.rerun()
 
-# 顯示設定開關 (方便你測試)
-c1, c2, c3 = st.columns(3)
-with c1: st.toggle("Private (私有)", key='m_private')
-with c2: st.toggle("Peak (尖峰)", key='m_peak')
-with c3: st.toggle("Walk (步行)", key='m_walk')
+# 顯示開關
+c1, c2, c3, c4, c5 = st.columns(5)
+with c1: st.toggle("Private", key='m_private')
+with c2: st.toggle("Peak", key='m_peak')
+with c3: st.toggle("Rail", key='m_rail')
+with c4: st.toggle("Bike", key='m_bike')
+with c5: st.toggle("Walk", key='m_walk')
