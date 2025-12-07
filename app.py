@@ -229,8 +229,20 @@ if st.session_state['analyzed'] and not st.session_state['res']:
                 if p or e: res[m_key] = {'p': p, 'e': e}
         st.session_state['res'] = res
 
-# --- 5. 地圖繪製 ---
-# ✨ 改回簡約灰色底圖 (CartoDB positron) ✨
+# --- 5. 地圖繪製 (新增：圖例與圖層控制) ---
+
+# A. 顯示彩色圖例 (Streamlit Native Legend) - 安全且清晰
+st.markdown("""
+<div style="background-color:#ffffff; padding:10px; border-radius:5px; border:1px solid #ddd; margin-bottom:10px; display: flex; flex-wrap: wrap; gap: 15px; font-size: 14px;">
+    <div style="display:flex; align-items:center;"><span style="display:inline-block; width:15px; height:15px; background-color:#E74C3C; margin-right:5px; border-radius:3px;"></span>私有運具 (一般)</div>
+    <div style="display:flex; align-items:center;"><span style="display:inline-block; width:15px; height:15px; background-color:#922B21; margin-right:5px; border-radius:3px;"></span>私有運具 (尖峰)</div>
+    <div style="display:flex; align-items:center;"><span style="display:inline-block; width:15px; height:15px; background-color:#0070BD; margin-right:5px; border-radius:3px;"></span>軌道運輸</div>
+    <div style="display:flex; align-items:center;"><span style="display:inline-block; width:15px; height:15px; background-color:#F39C12; margin-right:5px; border-radius:3px;"></span>單車</div>
+    <div style="display:flex; align-items:center;"><span style="display:inline-block; width:15px; height:15px; background-color:#2ECC71; margin-right:5px; border-radius:3px;"></span>步行</div>
+</div>
+""", unsafe_allow_html=True)
+
+# B. 建立地圖
 m = folium.Map(location=st.session_state['marker'], zoom_start=13, tiles="CartoDB positron")
 
 # 1. 畫軌道
@@ -239,14 +251,19 @@ for l in rs.lines:
 for uid, pos in rs.stations.items():
     folium.CircleMarker(pos, radius=1.5, color='black', fill=True).add_to(m)
 
-# 2. 畫結果
+# 2. 畫結果 (使用 FeatureGroup 以支援圖層控制)
 colors = {'private': '#E74C3C', 'private_peak': '#922B21', 'rail': '#0070BD', 'bike': '#F39C12', 'walk': '#2ECC71'}
+labels_map = {'private': '🚗 私有運具', 'private_peak': '🚗 私有(尖峰)', 'rail': '🚆 軌道運輸', 'bike': '🚲 單車', 'walk': '🚶 步行'}
 area_stats = {}
 
 if st.session_state['res']:
     for k, v in st.session_state['res'].items():
         if k not in colors: continue
         
+        # 建立圖層群組 (這會出現在 LayerControl 中)
+        fg_name = labels_map.get(k, k)
+        fg = folium.FeatureGroup(name=fg_name)
+
         # 多邊形
         if v['p']:
             poly_geom = v['p']
@@ -254,8 +271,15 @@ if st.session_state['res']:
             for p in geoms:
                 locations = [(y, x) for x, y in p.exterior.coords]
                 holes = [[(y, x) for x, y in h.coords] for h in p.interiors]
-                # 純字串顏色
-                folium.Polygon(locations=locations, holes=holes, color=colors[k], fill_color=colors[k], fill_opacity=0.3, weight=0).add_to(m)
+                folium.Polygon(
+                    locations=locations, 
+                    holes=holes, 
+                    color=colors[k], 
+                    fill_color=colors[k], 
+                    fill_opacity=0.3, 
+                    weight=0,
+                    tooltip=fg_name # 滑鼠移上去顯示名稱
+                ).add_to(fg)
             
             try:
                 area = gpd.GeoSeries([poly_geom], crs="EPSG:4326").to_crs(epsg=3857).area[0] / 1e6
@@ -269,10 +293,16 @@ if st.session_state['res']:
                     geom = row.geometry
                     lines = list(geom.geoms) if geom.geom_type == 'MultiLineString' else [geom]
                     for line in lines:
-                        folium.PolyLine([(y, x) for x, y in line.coords], color=colors[k], weight=1.2, opacity=0.8).add_to(m)
+                        folium.PolyLine([(y, x) for x, y in line.coords], color=colors[k], weight=1.2, opacity=0.8).add_to(fg)
+        
+        # 將圖層加入地圖
+        fg.add_to(m)
 
-# 3. 標記
+# 3. 標記與控制
 folium.Marker(st.session_state['marker']).add_to(m)
+
+# ✅ 加入 LayerControl (因為現在沒有使用 style_function lambda，所以是安全的！)
+folium.LayerControl(collapsed=False).add_to(m)
 
 # 4. 顯示統計
 if area_stats:
