@@ -280,7 +280,9 @@ if area_stats:
     cols = st.columns(len(area_stats))
     labels = {'private': '私有', 'private_peak': '尖峰', 'rail': '軌道', 'bike': '單車', 'walk': '步行'}
     for idx, (k, val) in enumerate(area_stats.items()):
-        if idx < len(cols): with cols[idx]: st.metric(label=labels.get(k, k), value=f"{val:.1f} km²")
+        if idx < len(cols):
+            with cols[idx]:
+                st.metric(label=labels.get(k, k), value=f"{val:.1f} km²")
 
 # 5. 渲染
 try:
