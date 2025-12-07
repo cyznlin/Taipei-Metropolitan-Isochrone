@@ -207,6 +207,7 @@ defaults = {'year': '2025', 'limit': 30, 'wait_cost': 5, 'm_private': False, 'm_
 for k, v in defaults.items():
     if k not in st.session_state: st.session_state[k] = v
 
+# [第一區] 標題與說明
 st.title("北北基桃等時圈 Taipei Metropolitan Area Isochrone Map")
 st.info("💡 **操作順序：** 1. 點擊地圖選擇地點 → 2. 設定下方參數 → 3. 點擊「開始分析」")
 
@@ -229,20 +230,7 @@ if st.session_state['analyzed'] and not st.session_state['res']:
                 if p or e: res[m_key] = {'p': p, 'e': e}
         st.session_state['res'] = res
 
-# --- 5. 地圖繪製 (新增：圖例與圖層控制) ---
-
-# A. 顯示彩色圖例 (Streamlit Native Legend) - 安全且清晰
-st.markdown("""
-<div style="background-color:#ffffff; padding:10px; border-radius:5px; border:1px solid #ddd; margin-bottom:10px; display: flex; flex-wrap: wrap; gap: 15px; font-size: 14px;">
-    <div style="display:flex; align-items:center;"><span style="display:inline-block; width:15px; height:15px; background-color:#E74C3C; margin-right:5px; border-radius:3px;"></span>私有運具 (一般)</div>
-    <div style="display:flex; align-items:center;"><span style="display:inline-block; width:15px; height:15px; background-color:#922B21; margin-right:5px; border-radius:3px;"></span>私有運具 (尖峰)</div>
-    <div style="display:flex; align-items:center;"><span style="display:inline-block; width:15px; height:15px; background-color:#0070BD; margin-right:5px; border-radius:3px;"></span>軌道運輸</div>
-    <div style="display:flex; align-items:center;"><span style="display:inline-block; width:15px; height:15px; background-color:#F39C12; margin-right:5px; border-radius:3px;"></span>單車</div>
-    <div style="display:flex; align-items:center;"><span style="display:inline-block; width:15px; height:15px; background-color:#2ECC71; margin-right:5px; border-radius:3px;"></span>步行</div>
-</div>
-""", unsafe_allow_html=True)
-
-# B. 建立地圖
+# --- 地圖物件準備 ---
 m = folium.Map(location=st.session_state['marker'], zoom_start=13, tiles="CartoDB positron")
 
 # 1. 畫軌道
@@ -251,20 +239,18 @@ for l in rs.lines:
 for uid, pos in rs.stations.items():
     folium.CircleMarker(pos, radius=1.5, color='black', fill=True).add_to(m)
 
-# 2. 畫結果 (使用 FeatureGroup 以支援圖層控制)
+# 2. 畫結果並計算統計數據
 colors = {'private': '#E74C3C', 'private_peak': '#922B21', 'rail': '#0070BD', 'bike': '#F39C12', 'walk': '#2ECC71'}
-labels_map = {'private': '🚗 私有運具', 'private_peak': '🚗 私有(尖峰)', 'rail': '🚆 軌道運輸', 'bike': '🚲 單車', 'walk': '🚶 步行'}
+labels_map = {'private': '私有運具 (一般)', 'private_peak': '私有運具 (尖峰)', 'rail': '軌道運輸', 'bike': '單車', 'walk': '步行'}
 area_stats = {}
 
 if st.session_state['res']:
     for k, v in st.session_state['res'].items():
         if k not in colors: continue
         
-        # 建立圖層群組 (這會出現在 LayerControl 中)
         fg_name = labels_map.get(k, k)
         fg = folium.FeatureGroup(name=fg_name)
 
-        # 多邊形
         if v['p']:
             poly_geom = v['p']
             geoms = list(poly_geom.geoms) if isinstance(poly_geom, MultiPolygon) else [poly_geom] if isinstance(poly_geom, Polygon) else []
@@ -278,7 +264,7 @@ if st.session_state['res']:
                     fill_color=colors[k], 
                     fill_opacity=0.3, 
                     weight=0,
-                    tooltip=fg_name # 滑鼠移上去顯示名稱
+                    tooltip=fg_name
                 ).add_to(fg)
             
             try:
@@ -286,7 +272,6 @@ if st.session_state['res']:
                 area_stats[k] = area
             except: pass
 
-        # 詳細線條
         if st.session_state['is_detailed'] and v['e']:
             for gdf in v['e']:
                 for _, row in gdf.iterrows():
@@ -295,39 +280,55 @@ if st.session_state['res']:
                     for line in lines:
                         folium.PolyLine([(y, x) for x, y in line.coords], color=colors[k], weight=1.2, opacity=0.8).add_to(fg)
         
-        # 將圖層加入地圖
         fg.add_to(m)
 
-# 3. 標記與控制
+# 3. 標記與 LayerControl
 folium.Marker(st.session_state['marker']).add_to(m)
-
-# ✅ 加入 LayerControl (因為現在沒有使用 style_function lambda，所以是安全的！)
 folium.LayerControl(collapsed=False).add_to(m)
 
-# 4. 顯示統計
+# --- [UI 順序調整區] ---
+
+# [第二區] 統計數據 + Legend (整合在一起)
 if area_stats:
     st.markdown("### 📊 可及範圍統計")
+    # 使用 st.columns 排列，並在 HTML 中嵌入顏色方塊
     cols = st.columns(len(area_stats))
-    labels = {'private': '私有', 'private_peak': '尖峰', 'rail': '軌道', 'bike': '單車', 'walk': '步行'}
     for idx, (k, val) in enumerate(area_stats.items()):
         if idx < len(cols):
             with cols[idx]:
-                st.metric(label=labels.get(k, k), value=f"{val:.1f} km²")
+                color = colors[k]
+                label = labels_map.get(k, k)
+                # 使用 HTML 渲染帶有顏色方塊的標題
+                st.markdown(
+                    f"""
+                    <div style="padding: 5px; border-radius: 5px; border: 1px solid #f0f2f6; background-color: #f9f9f9;">
+                        <div style="color: #333; font-size: 14px; font-weight: bold; margin-bottom: 5px; display: flex; align-items: center;">
+                            <span style="display:inline-block; width:12px; height:12px; background-color:{color}; border-radius:3px; margin-right:8px;"></span>
+                            {label}
+                        </div>
+                        <div style="font-size: 24px; font-weight: 600; color: #000; padding-left: 20px;">
+                            {val:.1f} km²
+                        </div>
+                    </div>
+                    """, 
+                    unsafe_allow_html=True
+                )
 
-# 5. 渲染
+# [第三區] 地圖 (Map)
 try:
     map_data = st_folium(m, width=None, height=500, returned_objects=["last_clicked"])
 except Exception as e:
     st.error(f"地圖渲染錯誤: {e}")
     map_data = None
 
-# --- 6. 控制面板 ---
+# 點擊地圖更新邏輯
 if not st.session_state['analyzed'] and map_data and map_data.get('last_clicked'):
     lat, lon = map_data['last_clicked']['lat'], map_data['last_clicked']['lng']
     if geodesic((lat, lon), st.session_state['marker']).meters > 10:
         st.session_state['marker'] = [lat, lon]
         st.rerun()
 
+# [第四區] 按鈕與控制面板
 status_txt = "✅ 完成" if st.session_state['analyzed'] else "⚙️ 設定"
 selected_labels = [k for k, v in current_modes.items() if v]
 mode_summary = "/".join(selected_labels) if selected_labels else "未選"
