@@ -380,7 +380,7 @@ show_expander = not st.session_state['analyzed']
 with st.expander(expander_label, expanded=show_expander):
     c1, c2, c3 = st.columns(3)
     with c1: st.select_slider("📅 年份", options=['2025', '2028', '2031'], key='year')
-    with c2: st.slider("⏱️ 時間", 10, 60, key='limit')
+    with c2: st.slider("⏱️ 時間", 5, 60, key='limit')
     with c3: st.slider("⏳ 進站", 0, 15, key='wait_cost', help="轉乘/進出站成本")
 
     st.write("---")
