@@ -1,5 +1,5 @@
 ---
-title: Taipei Map Demo
+title: Taipei Isochrone Demo
 emoji: 🗺️
 colorFrom: blue
 colorTo: green
