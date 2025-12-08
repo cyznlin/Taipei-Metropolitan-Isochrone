@@ -130,10 +130,15 @@ class RailSystem:
                         w = 0.5
                         if u.split('_')[0] == v.split('_')[0]: w = 0.0
                         self.rail_G.add_edge(u, v, weight=w)
+                        self.lines.append({
+                            "coords": [self.stations[u], self.stations[v]], 
+                            "color": "#666", 
+                            "dash": "2, 2", 
+                            "weight": 1
+                        })
                     elif dist < 450:
                         w = 5.0
                         if "A1" in u and "台北" in v: w = 12.0
-                        elif "BR" in u or "Y" in u: w = 7.0
                         self.rail_G.add_edge(u, v, weight=w)
                         self.lines.append({"coords": [self.stations[u], self.stations[v]], "color": "#666", "dash": "2, 2", "weight": 1})
 
