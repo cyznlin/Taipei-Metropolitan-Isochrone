@@ -126,19 +126,18 @@ class RailSystem:
                     if line_u == line_v: continue
 
                     dist = geodesic(self.stations[u], self.stations[v]).meters
-                    if dist < 80:
-                        w = 0.5
+                    if dist < 40:
+                        w = 1.0
                         if u.split('_')[0] == v.split('_')[0]: w = 0.0
                         self.rail_G.add_edge(u, v, weight=w)
-                        self.lines.append({
-                            "coords": [self.stations[u], self.stations[v]], 
-                            "color": "#666", 
-                            "dash": "2, 2", 
-                            "weight": 1
-                        })
-                    elif dist < 450:
+                        self.lines.append({"coords": [self.stations[u], self.stations[v]], "color": "#666", "dash": "2, 2", "weight": 1})
+                    elif dist < 200:
                         w = 5.0
-                        if "A1" in u and "台北" in v: w = 12.0
+                        self.rail_G.add_edge(u, v, weight=w)
+                        self.lines.append({"coords": [self.stations[u], self.stations[v]], "color": "#666", "dash": "2, 2", "weight": 1})
+                    elif dist < 500:
+                        w = 8.0
+                        if "A1" in u and "台北" in v: w = 10.0
                         self.rail_G.add_edge(u, v, weight=w)
                         self.lines.append({"coords": [self.stations[u], self.stations[v]], "color": "#666", "dash": "2, 2", "weight": 1})
 
