@@ -127,14 +127,14 @@ class RailSystem:
 
                     dist = geodesic(self.stations[u], self.stations[v]).meters
                     if dist < 40:
-                        w = 1.0
+                        w = 2.0
                         self.rail_G.add_edge(u, v, weight=w)
                         self.lines.append({"coords": [self.stations[u], self.stations[v]], "color": "#666", "dash": "2, 2", "weight": 1})
                     elif dist < 200:
                         w = 5.0
                         self.rail_G.add_edge(u, v, weight=w)
                         self.lines.append({"coords": [self.stations[u], self.stations[v]], "color": "#666", "dash": "2, 2", "weight": 1})
-                    elif dist < 500:
+                    elif dist < 470:
                         w = 8.0
                         if "A1" in u and "台北" in v: w = 10.0
                         self.rail_G.add_edge(u, v, weight=w)
@@ -146,7 +146,7 @@ class RailSystem:
         for uid, pos in self.stations.items():
             d_straight = geodesic(start, pos).meters
             if d_straight > 2000: continue
-            t = (d_straight * detour_factor) / (4.0 * 1000 / 60) + wait_time
+            t = (d_straight * detour_factor) / (4.5 * 1000 / 60) + wait_time
             if t < limit: entry.append((uid, t))
 
         if not entry: return []
@@ -316,7 +316,8 @@ if area_stats:
                     """, 
                     unsafe_allow_html=True
                 )
-
+st.write("") 
+st.write("")
 # [第三區] 地圖 (Map)
 try:
     map_data = st_folium(m, width=None, height=500, returned_objects=["last_clicked"])
